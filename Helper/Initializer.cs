@@ -1,73 +1,118 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using MySqlConnector;
 using Notify.Core.Abstractions;
 using Notify.Core.Configuration;
 using Notify.Infrastructure.Data;
 using Notify.Infrastructure.Providers;
 using Notify.Services;
+using Serilog;
+using Serilog.Formatting.Compact; 
+using Serilog.Sinks.SystemConsole.Themes;
 using System.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Notify.Helper
 {
     public sealed class Initializer
     {
-        private readonly ServiceProvider _serviceProvider;
-        private readonly ServiceCollection _serviceDescriptors;
-        
+        private readonly IHost _host;
+
         public Initializer(string[] args)
         {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
             Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
-            ArgsParser argsParser = new ArgsParser(args);
+            DateTime date = TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.UtcNow,
+                TimeZoneInfo.FindSystemTimeZoneById(
+                    OperatingSystem.IsWindows()
+                        ? "FLE Standard Time"
+                        : "Europe/Kyiv"
+                )
+            );
 
-            ConfigurationBuilder configBuilder = new ConfigurationBuilder();
-            configBuilder.SetBasePath(AppContext.BaseDirectory);
-            configBuilder.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
-
-            string appSettingsDev = "appsettings.dev.json"; 
-            if (File.Exists(Path.Combine(AppContext.BaseDirectory, appSettingsDev)))
+            IArgs argsParser = new ArgsParser(args);
+            string logsPath = argsParser.Get("logs") ?? string.Empty;
+            
+            if (string.IsNullOrWhiteSpace(logsPath))
             {
-                configBuilder.AddJsonFile(appSettingsDev, optional: true, reloadOnChange: true);
+                throw new ArgumentException("The '--logs' parameter is binding and cannot be left empty");
             }
 
-            IConfigurationRoot config = configBuilder.Build();
+            logsPath = Path.Combine(logsPath, string.Concat("notifier-", date.ToString("yyyy-MM-dd"), ".log"));
 
+            string? logDir = Path.GetDirectoryName(logsPath);
+            if (!string.IsNullOrEmpty(logDir))
+            {
+                if (!Directory.Exists(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+
+                foreach (string file in Directory.GetFiles(logDir, "notifier-*.log"))
+                {
+                    if (File.GetLastWriteTime(file) < date.AddDays(-14))
+                    {
+                        File.Delete(file);
+                    }
+                }
+            }
+
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .WriteTo.Console(
+                    theme: AnsiConsoleTheme.Code, 
+                    outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}"
+                )
+                .WriteTo.File(
+                    formatter: new CompactJsonFormatter(),     
+                    path: logsPath
+                )
+                .CreateLogger();
+
+            HostApplicationBuilder builder = new HostApplicationBuilder(args);
+            
+            builder.Logging.ClearProviders();
+            builder.Logging.AddSerilog();
+
+            IConfigurationManager config = builder.Configuration;
+            
             AppConfiguration appSettings = new AppConfiguration()
             {
-                Database = new DatabaseConfiguration() 
+                Database = new DatabaseConfiguration()
                 {
                     ConnectionString = config["Database:ConnectionString"]
                 },
-                Providers = new ProvidersConfiguration() 
+                Providers = new ProvidersConfiguration()
                 {
                     Esputnik = config["Providers:Esputnik"],
-                    SMSClub  = config["Providers:SMSClub"]
+                    SMSClub = config["Providers:SMSClub"]
                 }
             };
-            
-            this._serviceDescriptors = new ServiceCollection();
 
-            this._serviceDescriptors.AddSingleton<IArgs>(argsParser);
+            IServiceCollection services = builder.Services;
 
-            this._serviceDescriptors.AddSingleton(appSettings);
-            this._serviceDescriptors.AddSingleton<IConfiguration>(config);
+            services.AddSingleton<IArgs>(argsParser);
+            services.AddSingleton(appSettings);
+            services.AddScoped<ICustomerRepository, CustomerRepository>();
+            services.AddScoped<INotificationRepository, NotificationRepository>();
+            services.AddTransient<IWorkflowRunner, WorkflowRunner>();
+            services.AddTransient<IDbConnection>(_ => new MySqlConnection(appSettings.Database?.ConnectionString));
+            services.AddTransient<IWorkflowEngine, WorkflowEngine>();
 
-            this._serviceDescriptors.AddTransient<IWorkflowEngine, WorkflowEngine>();
-
-            this._serviceDescriptors.AddTransient<IDbConnection>((sp) => new MySqlConnection(appSettings.Database?.ConnectionString));
-            this._serviceDescriptors.AddScoped<ICustomerRepository, CustomerRepository>();
-
-            this._serviceDescriptors.AddHttpClient<EmailEsputnikProvider>(client =>
+            services.AddHttpClient<EmailEsputnikProvider>(client =>
             {
                 client.BaseAddress = new Uri("https://esputnik.com/api/v1/");
                 client.Timeout = TimeSpan.FromSeconds(15);
                 client.DefaultRequestHeaders.Add("Accept", "application/json");
 
-                if (!string.IsNullOrEmpty(appSettings.Providers?.Esputnik)) 
+                if (!string.IsNullOrEmpty(appSettings.Providers?.Esputnik))
                 {
                     string credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes(appSettings.Providers.Esputnik));
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
@@ -76,22 +121,7 @@ namespace Notify.Helper
             .ConfigurePrimaryHttpMessageHandler(CreateHandler)
             .AddStandardResilienceHandler();
 
-            this._serviceDescriptors.AddHttpClient<ViberSMSClubProvider>(client =>
-            {
-                client.BaseAddress = new Uri("https://im.smsclub.mobi/");
-                
-                client.Timeout = TimeSpan.FromSeconds(15);
-                client.DefaultRequestHeaders.Add("Accept", "application/json");
-
-                if (!string.IsNullOrEmpty(appSettings.Providers?.SMSClub))
-                {
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", appSettings.Providers.SMSClub);
-                }
-            })
-            .ConfigurePrimaryHttpMessageHandler(CreateHandler)
-            .AddStandardResilienceHandler();
-
-            this._serviceDescriptors.AddHttpClient<SmsSMSClubProvider>(client =>
+            services.AddHttpClient<ViberSMSClubProvider>(client =>
             {
                 client.BaseAddress = new Uri("https://im.smsclub.mobi/");
                 client.Timeout = TimeSpan.FromSeconds(15);
@@ -105,28 +135,42 @@ namespace Notify.Helper
             .ConfigurePrimaryHttpMessageHandler(CreateHandler)
             .AddStandardResilienceHandler();
 
-            this._serviceDescriptors.AddSingleton<Func<string, INotificationProvider>>(sp => key =>
+            services.AddHttpClient<SmsSMSClubProvider>(client =>
+            {
+                client.BaseAddress = new Uri("https://im.smsclub.mobi/");
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                if (!string.IsNullOrEmpty(appSettings.Providers?.SMSClub))
+                {
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", appSettings.Providers.SMSClub);
+                }
+            })
+            .ConfigurePrimaryHttpMessageHandler(CreateHandler)
+            .AddStandardResilienceHandler();
+
+            services.AddTransient<Func<string, INotificationProvider>>(sp => key =>
             {
                 if (Enum.TryParse<Notify.Core.Enums.MessageProvider>(key, ignoreCase: true, out var provider))
                 {
                     return provider switch
                     {
-                        Notify.Core.Enums.MessageProvider.SMS   => sp.GetRequiredService<SmsSMSClubProvider>(),
+                        Notify.Core.Enums.MessageProvider.SMS => sp.GetRequiredService<SmsSMSClubProvider>(),
                         Notify.Core.Enums.MessageProvider.Viber => sp.GetRequiredService<ViberSMSClubProvider>(),
                         Notify.Core.Enums.MessageProvider.Email => sp.GetRequiredService<EmailEsputnikProvider>(),
-                        _ => throw new KeyNotFoundException($"Provider '{provider}' not supported.")
+                        _ => throw new KeyNotFoundException($"Provider '{provider}' not supported")
                     };
                 }
 
-                throw new KeyNotFoundException($"Provider with key '{key}' not found.");
+                throw new KeyNotFoundException($"Provider with key '{key}' not found");
             });
 
-            this._serviceProvider = this._serviceDescriptors.BuildServiceProvider();
+            this._host = builder.Build(); 
         }
 
-        public ServiceProvider GetServiceProvider() => this._serviceProvider;
+        public IServiceProvider Services => _host.Services;
 
-        public ServiceCollection GetServiceDescriptors() => this._serviceDescriptors;
+        public IHost Host => _host;
 
         private static SocketsHttpHandler CreateHandler() => new SocketsHttpHandler()
         {

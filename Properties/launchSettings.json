@@ -2,7 +2,10 @@
   "profiles": {
     "Notify": {
       "commandName": "Project",
-      "commandLineArgs": "--workflows=\"Z:\\OpenServer\\domains\\assol.loc\\notify\\config\\workflows\""
+      "commandLineArgs": "--workflows=\"Z:\\OpenServer\\domains\\assol.loc\\notify\\config\\workflows\" --logs=\"Z:\\OpenServer\\domains\\assol.loc\\notify\\logs\"",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
     }
   }
 }

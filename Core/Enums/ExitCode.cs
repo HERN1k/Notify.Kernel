@@ -9,6 +9,8 @@
         ProviderError = 4,
         InvalidOperation = 5,
         OperationCanceled = 6,
+        FileNotFound = 7,
+        InvalidConfig = 8,
         UnhandledException = 99
     }
 }
