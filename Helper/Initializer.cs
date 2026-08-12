@@ -5,6 +5,7 @@ using Notify.Core.Abstractions;
 using Notify.Core.Configuration;
 using Notify.Infrastructure.Data;
 using Notify.Infrastructure.Providers;
+using Notify.Services;
 using System.Data;
 using System.Net;
 using System.Net.Http.Headers;
@@ -20,7 +21,9 @@ namespace Notify.Helper
         public Initializer(string[] args)
         {
             Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
-            
+
+            ArgsParser argsParser = new ArgsParser(args);
+
             ConfigurationBuilder configBuilder = new ConfigurationBuilder();
             configBuilder.SetBasePath(AppContext.BaseDirectory);
             configBuilder.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
@@ -48,8 +51,12 @@ namespace Notify.Helper
             
             this._serviceDescriptors = new ServiceCollection();
 
+            this._serviceDescriptors.AddSingleton<IArgs>(argsParser);
+
             this._serviceDescriptors.AddSingleton(appSettings);
             this._serviceDescriptors.AddSingleton<IConfiguration>(config);
+
+            this._serviceDescriptors.AddTransient<IWorkflowEngine, WorkflowEngine>();
 
             this._serviceDescriptors.AddTransient<IDbConnection>((sp) => new MySqlConnection(appSettings.Database?.ConnectionString));
             this._serviceDescriptors.AddScoped<ICustomerRepository, CustomerRepository>();

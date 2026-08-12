@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Notify": {
+      "commandName": "Project",
+      "commandLineArgs": "--workflows=\"Z:\\OpenServer\\domains\\assol.loc\\notify\\config\\workflows\""
+    }
+  }
+}

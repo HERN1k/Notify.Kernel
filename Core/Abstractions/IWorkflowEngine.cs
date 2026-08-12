@@ -1,7 +1,9 @@
-﻿namespace Notify.Core.Abstractions
+﻿using Notify.Core.Enums;
+
+namespace Notify.Core.Abstractions
 {
     public interface IWorkflowEngine
     {
-        Task<int> ExecuteAsync(string workflowName);
+        Task<ExitCode> ExecuteAsync(string workflowPath);
     }
 }
