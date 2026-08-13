@@ -15,16 +15,17 @@ namespace Notify.Infrastructure.Providers
             _httpClient = httpClient;
         }
 
-        public async Task<bool> SendAsync(List<string> recipients, string message, CancellationToken cancellationToken = default)
+        public async Task<bool> SendAsync(IEnumerable<NotificationItem> notifications, CancellationToken cancellationToken = default)
         {
-            SmsRequestDto payload = new SmsRequestDto() { 
+            return true;
+            /* SmsRequestDto payload = new SmsRequestDto() { 
                 Phones = recipients, 
                 Message = message
             };
             
             var response = await _httpClient.PostAsJsonAsync<SmsRequestDto>("https://api.smsclub.mobi/v2/sms/send", payload, AppJsonContext.Default.SmsRequestDto, cancellationToken);
 
-            return response.IsSuccessStatusCode;
+            return response.IsSuccessStatusCode; */
         }
     }
 }

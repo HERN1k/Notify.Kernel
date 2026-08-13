@@ -40,6 +40,9 @@ namespace Notify.Core.Models.Yaml
 
         [YamlMember("callbacks")]
         public Dictionary<string, string>? Callbacks { get; set; }
+
+        [YamlMember("subject")]
+        public string? Subject { get; set; }
     }
 
     [YamlObject]

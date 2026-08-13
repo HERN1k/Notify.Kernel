@@ -9,13 +9,13 @@ using Notify.Infrastructure.Data;
 using Notify.Infrastructure.Providers;
 using Notify.Services;
 using Serilog;
+using Serilog.Events;
 using Serilog.Formatting.Compact; 
 using Serilog.Sinks.SystemConsole.Themes;
 using System.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Notify.Helper
 {
@@ -28,15 +28,6 @@ namespace Notify.Helper
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
-            DateTime date = TimeZoneInfo.ConvertTimeFromUtc(
-                DateTime.UtcNow,
-                TimeZoneInfo.FindSystemTimeZoneById(
-                    OperatingSystem.IsWindows()
-                        ? "FLE Standard Time"
-                        : "Europe/Kyiv"
-                )
-            );
-
             IArgs argsParser = new ArgsParser(args);
             string logsPath = argsParser.Get("logs") ?? string.Empty;
             
@@ -45,7 +36,7 @@ namespace Notify.Helper
                 throw new ArgumentException("The '--logs' parameter is binding and cannot be left empty");
             }
 
-            logsPath = Path.Combine(logsPath, string.Concat("notifier-", date.ToString("yyyy-MM-dd"), ".log"));
+            logsPath = Path.Combine(logsPath, string.Concat("notifier-", Program.DateTimeKiev.ToString("yyyy-MM-dd"), ".log"));
 
             string? logDir = Path.GetDirectoryName(logsPath);
             if (!string.IsNullOrEmpty(logDir))
@@ -57,7 +48,7 @@ namespace Notify.Helper
 
                 foreach (string file in Directory.GetFiles(logDir, "notifier-*.log"))
                 {
-                    if (File.GetLastWriteTime(file) < date.AddDays(-14))
+                    if (File.GetLastWriteTime(file) < Program.DateTimeKiev.AddDays(-14))
                     {
                         File.Delete(file);
                     }
@@ -65,7 +56,10 @@ namespace Notify.Helper
             }
 
             Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
+                .MinimumLevel.Information()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+                .MinimumLevel.Override("System.Net.Http", LogEventLevel.Warning)
+                .MinimumLevel.Override("Polly", LogEventLevel.Warning)
                 .WriteTo.Console(
                     theme: AnsiConsoleTheme.Code, 
                     outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}"
@@ -100,8 +94,7 @@ namespace Notify.Helper
 
             services.AddSingleton<IArgs>(argsParser);
             services.AddSingleton(appSettings);
-            services.AddScoped<ICustomerRepository, CustomerRepository>();
-            services.AddScoped<INotificationRepository, NotificationRepository>();
+            services.AddScoped<IRepository, Repository>();
             services.AddTransient<IWorkflowRunner, WorkflowRunner>();
             services.AddTransient<IDbConnection>(_ => new MySqlConnection(appSettings.Database?.ConnectionString));
             services.AddTransient<IWorkflowEngine, WorkflowEngine>();
@@ -149,20 +142,15 @@ namespace Notify.Helper
             .ConfigurePrimaryHttpMessageHandler(CreateHandler)
             .AddStandardResilienceHandler();
 
-            services.AddTransient<Func<string, INotificationProvider>>(sp => key =>
+            services.AddTransient<Func<Notify.Core.Enums.MessageProvider, INotificationProvider>>(sp => provider =>
             {
-                if (Enum.TryParse<Notify.Core.Enums.MessageProvider>(key, ignoreCase: true, out var provider))
+                return provider switch
                 {
-                    return provider switch
-                    {
-                        Notify.Core.Enums.MessageProvider.SMS => sp.GetRequiredService<SmsSMSClubProvider>(),
-                        Notify.Core.Enums.MessageProvider.Viber => sp.GetRequiredService<ViberSMSClubProvider>(),
-                        Notify.Core.Enums.MessageProvider.Email => sp.GetRequiredService<EmailEsputnikProvider>(),
-                        _ => throw new KeyNotFoundException($"Provider '{provider}' not supported")
-                    };
-                }
-
-                throw new KeyNotFoundException($"Provider with key '{key}' not found");
+                    Notify.Core.Enums.MessageProvider.SMS => sp.GetRequiredService<SmsSMSClubProvider>(),
+                    Notify.Core.Enums.MessageProvider.Viber => sp.GetRequiredService<ViberSMSClubProvider>(),
+                    Notify.Core.Enums.MessageProvider.Email => sp.GetRequiredService<EmailEsputnikProvider>(),
+                    _ => throw new KeyNotFoundException($"Provider '{provider}' not supported")
+                };
             });
 
             this._host = builder.Build(); 

@@ -10,6 +10,20 @@ namespace Notify
 {
     internal class Program
     {
+        public static readonly DateTime DateTimeKiev;
+
+        static Program() 
+        {
+            DateTimeKiev = TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.UtcNow,
+                TimeZoneInfo.FindSystemTimeZoneById(
+                    OperatingSystem.IsWindows()
+                        ? "FLE Standard Time"
+                        : "Europe/Kyiv"
+                )
+            );
+        }
+
         static async Task<int> Main(string[] args)
         {
             ExitCode exitCode = ExitCode.Success;
