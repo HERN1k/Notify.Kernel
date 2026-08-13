@@ -66,14 +66,15 @@ namespace Notify.Helper
                 )
                 .WriteTo.File(
                     formatter: new CompactJsonFormatter(),     
-                    path: logsPath
+                    path: logsPath,
+                    shared: true
                 )
                 .CreateLogger();
-
+            
             HostApplicationBuilder builder = new HostApplicationBuilder(args);
             
             builder.Logging.ClearProviders();
-            builder.Logging.AddSerilog();
+            builder.Logging.AddSerilog(Log.Logger, dispose: false);
 
             IConfigurationManager config = builder.Configuration;
             
@@ -87,8 +88,18 @@ namespace Notify.Helper
                 {
                     Esputnik = config["Providers:Esputnik"],
                     SMSClub = config["Providers:SMSClub"]
+                },
+                PHPClient = new PHPClientConfiguration()
+                {
+                    Domain = config["PHPClient:Domain"],
+                    Token = config["PHPClient:Token"]
                 }
             };
+
+            if (appSettings.PHPClient == null || string.IsNullOrEmpty(appSettings.PHPClient.Domain) || string.IsNullOrEmpty(appSettings.PHPClient.Token))
+            {
+                throw new ArgumentException("The 'PHPClient' configuration is empty");
+            }
 
             IServiceCollection services = builder.Services;
 
@@ -97,7 +108,16 @@ namespace Notify.Helper
             services.AddScoped<IRepository, Repository>();
             services.AddTransient<IWorkflowRunner, WorkflowRunner>();
             services.AddTransient<IDbConnection>(_ => new MySqlConnection(appSettings.Database?.ConnectionString));
-            services.AddTransient<IWorkflowEngine, WorkflowEngine>();
+
+            services.AddHttpClient<IWorkflowEngine, WorkflowEngine>(client =>
+            {
+                client.BaseAddress = new Uri(appSettings.PHPClient.Domain);
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+                client.DefaultRequestHeaders.Add("X-Internal-Secret", appSettings.PHPClient.Token);
+            })
+            .ConfigurePrimaryHttpMessageHandler(CreateHandler)
+            .AddStandardResilienceHandler();
 
             services.AddHttpClient<EmailEsputnikProvider>(client =>
             {

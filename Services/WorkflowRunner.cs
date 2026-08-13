@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Notify.Core.Abstractions;
 using Notify.Core.Enums;
 using Notify.Helper;
+using System.Collections.Concurrent;
 
 namespace Notify.Services
 {
@@ -14,17 +15,14 @@ namespace Notify.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<WorkflowRunner> _logger;
 
-        public WorkflowRunner(
-            IArgs args,
-            IServiceProvider serviceProvider,
-            ILogger<WorkflowRunner> logger)
+        public WorkflowRunner(IArgs args, IServiceProvider serviceProvider, ILogger<WorkflowRunner> logger)
         {
             _args = args;
             _serviceProvider = serviceProvider;
             _logger = logger;
         }
 
-        public async Task<ExitCode> RunAsync()
+        public async Task<ExitCode> RunAsync(CancellationToken ct = default)
         {
             string workflowsPath = _args.Get("workflows") ?? string.Empty;
 
@@ -46,25 +44,58 @@ namespace Notify.Services
                 .Execute(new DirectoryInfoWrapper(directoryInfo)).Files
                 .Select(f => Path.Combine(fullWorkflowsPath, f.Path));
 
-            ExitCode exitCode = ExitCode.Success;
-
-            foreach (string workflowPath in workflowPaths)
+            if (!workflowPaths.Any())
             {
-                using (IServiceScope workflowScope = _serviceProvider.CreateScope())
-                {
-                    IWorkflowEngine engine = workflowScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-
-                    exitCode = await engine.ExecuteAsync(workflowPath);
-                }
-
-                if (exitCode == ExitCode.UnhandledException)
-                {
-                    break;
-                }
+                _logger.LogCompletedProcessing(ExitCode.Success);
+                return ExitCode.Success;
             }
 
-            _logger.LogCompletedProcessing(exitCode);
-            return exitCode;
+            ParallelOptions options = new ParallelOptions()
+            {
+                MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount - 1),
+                CancellationToken = ct
+            };
+
+            ConcurrentBag<ExitCode> exitCodes = new ConcurrentBag<ExitCode>();
+
+            try
+            {
+                await Parallel.ForEachAsync(workflowPaths, options, async (workflowPath, token) =>
+                {
+                    using (IServiceScope workflowScope = _serviceProvider.CreateScope())
+                    {
+                        try
+                        {
+                            IWorkflowEngine engine = workflowScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+                            ExitCode code = await engine.ExecuteAsync(workflowPath, token);
+
+                            exitCodes.Add(code);
+                        }
+                        catch (OperationCanceledException) when (token.IsCancellationRequested)
+                        {
+                            exitCodes.Add(ExitCode.OperationCanceled);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWorkflowExecutionFailed(ex, workflowPath);
+                            exitCodes.Add(ExitCode.UnhandledException);
+                        }
+                    }
+                });
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                _logger.LogCompletedProcessing(ExitCode.OperationCanceled);
+                return ExitCode.OperationCanceled;
+            }
+
+            ExitCode finalExitCode = exitCodes.Contains(ExitCode.UnhandledException)
+                ? ExitCode.UnhandledException
+                : exitCodes.FirstOrDefault(code => code != ExitCode.Success, ExitCode.Success);
+            
+            _logger.LogCompletedProcessing(finalExitCode);
+            return finalExitCode;
         }
     }
 }

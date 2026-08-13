@@ -20,7 +20,7 @@ namespace Notify.Infrastructure.Providers
             _logger = logger;
         }
 
-        public async Task<bool> SendAsync(IEnumerable<NotificationItem> notifications, CancellationToken cancellationToken = default)
+        public async Task<bool> SendAsync(IEnumerable<NotificationItem> notifications, CancellationToken ct = default)
         {
             NotificationItem[] messages = notifications.ToArray();
 
@@ -33,7 +33,7 @@ namespace Notify.Infrastructure.Providers
             {
                 ViberRequestDto payload = new ViberRequestDto()
                 {
-                    Phones = messages.Select(m => m.Recipient.Trim()),
+                    Phones = messages.Select(m => m.Recipient.Trim()).ToArray(),
                     Message = messages[0].Body.Trim()
                 };
 
@@ -42,34 +42,35 @@ namespace Notify.Infrastructure.Providers
                         requestUri: "vibers/send",
                         value: payload,
                         jsonTypeInfo: AppJsonContext.Default.ViberRequestDto,
-                        cancellationToken: cancellationToken
+                        cancellationToken: ct
                     )
                 ) {
+                    string responseBody = await response.Content.ReadAsStringAsync(ct);
+
                     if (response.IsSuccessStatusCode)
                     {
+                        _logger.LogBulkMessagesSuccessfullyDispatched("SMSClub", Channel, payload.Phones.Length, responseBody);
                         return true;
                     }
 
-                    string errorResponseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                    _logger.LogViberSMSClubDispatchFailed((int)response.StatusCode, errorResponseBody, messages.Length);
+                    _logger.LogAPIProviderDispatchFailed(Channel, "SMSClub", (int)response.StatusCode, responseBody, messages.Length);
 
                     return false;
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                _logger.LogViberSMSClubDispatchWasCanceled();
+                _logger.LogAPIProviderDispatchWasCanceled(Channel, "SMSClub");
                 return false;
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogHTTPNetworkErrorWhileCallingViberSMSClubAPI(ex, messages.Length);
+                _logger.LogHTTPNetworkErrorWhileCallingAPI(ex, Channel, "SMSClub", messages.Length);
                 return false;
             }
             catch (Exception ex)
             {
-                _logger.LogUnexpectedErrorOccurredDuringViberSMSClubDispatch(ex, messages.Length);
+                _logger.LogUnexpectedErrorOccurredDuringDispatch(ex, Channel, "SMSClub", messages.Length);
                 return false;
             }
         }

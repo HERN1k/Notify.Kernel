@@ -10,19 +10,14 @@ namespace Notify
 {
     internal class Program
     {
-        public static readonly DateTime DateTimeKiev;
-
-        static Program() 
-        {
-            DateTimeKiev = TimeZoneInfo.ConvertTimeFromUtc(
-                DateTime.UtcNow,
-                TimeZoneInfo.FindSystemTimeZoneById(
-                    OperatingSystem.IsWindows()
-                        ? "FLE Standard Time"
-                        : "Europe/Kyiv"
-                )
-            );
-        }
+        public static DateTime DateTimeKiev => TimeZoneInfo.ConvertTimeFromUtc(
+            DateTime.UtcNow,
+            TimeZoneInfo.FindSystemTimeZoneById(
+                OperatingSystem.IsWindows()
+                    ? "FLE Standard Time"
+                    : "Europe/Kyiv"
+            )
+        );
 
         static async Task<int> Main(string[] args)
         {
@@ -41,7 +36,9 @@ namespace Notify
 
                 IWorkflowRunner runner = host.Services.GetRequiredService<IWorkflowRunner>();
 
-                exitCode = await runner.RunAsync();
+                IHostApplicationLifetime lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+
+                exitCode = await runner.RunAsync(lifetime.ApplicationStopping);
             }
             catch (ArgumentException ex)
             {

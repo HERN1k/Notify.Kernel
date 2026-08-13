@@ -16,6 +16,7 @@ namespace Notify.Services
     {
         private readonly IRepository _repository;
         private readonly Func<MessageProvider, INotificationProvider> _providerFactory;
+        private readonly HttpClient _httpClient;
         private readonly ILogger<WorkflowEngine> _logger;
 
         private string _workflowName = string.Empty;
@@ -25,24 +26,24 @@ namespace Notify.Services
         [GeneratedRegex(@"^([+-]?\d+)\s*(hour|hours|day|days|month|months)$", RegexOptions.IgnoreCase)]
         private static partial Regex ModifyRuleRegex();
 
-        [GeneratedRegex(@"[\u1F600-\u1F64F\u1F300-\u1F5FF\u1F680-\u1F6FF\u1F1E0-\u1F1FF\u1F900-\u1F9FF\u1FA70-\u1FAFF\u2600-\u26FF\u2700-\u27BF\uFE00-\uFE0F\u200D]")]
+        [GeneratedRegex(@"[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF\uFE00-\uFE0F\u200D]")]
         private static partial Regex RenderCleanPayloadRegex();
 
         [GeneratedRegex(@"\s+")]
         private static partial Regex RenderCleanPayloadSpacesRegex();
 
-        public WorkflowEngine(
-            IRepository repository,
-            Func<MessageProvider, INotificationProvider> providerFactory,
-            ILogger<WorkflowEngine> logger)
+        public WorkflowEngine(IRepository repository, Func<MessageProvider, INotificationProvider> providerFactory, HttpClient httpClient, ILogger<WorkflowEngine> logger)
         {
             _repository = repository;
             _providerFactory = providerFactory;
+            _httpClient = httpClient;
             _logger = logger;
         }
 
-        public async Task<ExitCode> ExecuteAsync(string workflowPath)
+        public async Task<ExitCode> ExecuteAsync(string workflowPath, CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (!File.Exists(workflowPath))
             {
                 _logger.LogYAMLConfigNotFound(workflowPath);
@@ -52,7 +53,7 @@ namespace Notify.Services
             _workflowName = Path.GetFileNameWithoutExtension(workflowPath);
             _logger.LogRunWorkflow(_workflowName);
 
-            byte[] yamlBytes = await File.ReadAllBytesAsync(workflowPath);
+            byte[] yamlBytes = await File.ReadAllBytesAsync(workflowPath, ct);
 
             _config = YamlSerializer.Deserialize<WorkflowRootConfig>(yamlBytes, new YamlSerializerOptions
             {
@@ -82,21 +83,28 @@ namespace Notify.Services
                 return ExitCode.Success;
             }
 
+            if (_config.Callbacks != null && _config.Callbacks.TryGetValue("onEnter", out string? onEnterCallback) && !string.IsNullOrEmpty(onEnterCallback))
+            {
+                await TriggerPhpTaskAsync(onEnterCallback, ct);
+            }
+
             _maxAttempts = _config.Schedule?.Count ?? 0;
 
-            await ProcessEventsAsync();
-            await SetFirstSendAfterAsync();
-            await RecoverStuckTasksAsync();
+            await ProcessEventsAsync(ct);
+            await SetFirstSendAfterAsync(ct);
+            await RecoverStuckTasksAsync(ct);
 
             // 1. Fetch pending tasks ready for sending
-            IEnumerable<NotificationQueueItem> tasks = await _repository.GetPendingTasksAsync(_config.Name, _maxAttempts, Program.DateTimeKiev, _config.BatchLimit > 0 ? _config.BatchLimit : 100);
+            IEnumerable<NotificationQueueItem> tasks = await _repository.GetPendingTasksAsync(_config.Name, _maxAttempts, Program.DateTimeKiev, _config.BatchLimit > 0 ? _config.BatchLimit : 100, ct);
             if (!tasks.Any())
             {
                 return ExitCode.Success;
             }
 
+            ct.ThrowIfCancellationRequested();
+
             // 2. Atomically claim tasks for processing
-            IReadOnlySet<int> claimedIdsSet = await _repository.ClaimTasksAsync(_config.Name, tasks.Select(t => t.NotificationQueueId));
+            IReadOnlySet<int> claimedIdsSet = await _repository.ClaimTasksAsync(_config.Name, tasks.Select(t => t.NotificationQueueId), ct);
             if (!claimedIdsSet.Any())
             {
                 return ExitCode.Success;
@@ -114,22 +122,25 @@ namespace Notify.Services
 
             foreach (NotificationQueueItem item in itemsToProcess)
             {
+                ct.ThrowIfCancellationRequested();
+
                 NotificationTask task = new NotificationTask(item);
 
                 if (providerKey.Equals(MessageProvider.Email) && string.IsNullOrWhiteSpace(task.Email))
                 {
-                    await ApplyTransitionAndCancelAsync(task, "Customer email address not found");
+                    await ApplyTransitionAndCancelAsync(task, "Customer email address not found", ct);
                     continue;
                 }
 
-                if (!providerKey.Equals(MessageProvider.Email) && string.IsNullOrWhiteSpace(task.Telephone)) {
-                    await ApplyTransitionAndCancelAsync(task, "Customer phone number not found");
-                    continue;
-                }
-
-                if (!await ValidateConditionsAsync(task))
+                if (!providerKey.Equals(MessageProvider.Email) && string.IsNullOrWhiteSpace(task.Telephone))
                 {
-                    await ApplyTransitionAndCancelAsync(task, "Conditions not met");
+                    await ApplyTransitionAndCancelAsync(task, "Customer phone number not found", ct);
+                    continue;
+                }
+
+                if (!await ValidateConditionsAsync(task, ct))
+                {
+                    await ApplyTransitionAndCancelAsync(task, "Conditions not met", ct);
                     continue;
                 }
 
@@ -138,7 +149,7 @@ namespace Notify.Services
 
                 if (string.IsNullOrWhiteSpace(payload))
                 {
-                    await ApplyTransitionAndCancelAsync(task, string.Concat("Empty payload for attempt #", ((int)task.Attempts).ToString()));
+                    await ApplyTransitionAndCancelAsync(task, string.Concat("Empty payload for attempt #", ((int)task.Attempts).ToString()), ct);
                     continue;
                 }
 
@@ -161,12 +172,22 @@ namespace Notify.Services
             }
 
             // 3. Batch Sending via Provider
-            bool success = await ProcessBatchAsync(providerKey, tasksToSend, notifications);
+            bool success = await ProcessBatchAsync(providerKey, tasksToSend, notifications, ct);
+
+            if (_config.Callbacks != null && _config.Callbacks.TryGetValue("onLeave", out string? onLeaveCallback) && !string.IsNullOrEmpty(onLeaveCallback))
+            {
+                await TriggerPhpTaskAsync(onLeaveCallback, ct);
+            }
+
+            _logger.LogWorkflowCompleted(_workflowName);
+
             return success ? ExitCode.Success : ExitCode.InvalidOperation;
         }
-        
-        private async Task ProcessEventsAsync()
+
+        private async Task ProcessEventsAsync(CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (_config?.Events == null ||
                 _config.Events.Triggers.Count == 0 ||
                 string.IsNullOrEmpty(_config.Events.Code) ||
@@ -176,19 +197,21 @@ namespace Notify.Services
             }
 
             IEnumerable<string> triggers = _config.Events.Triggers.Distinct().Select(t => t.Value).OrderBy(t => t);
-            IEnumerable<string> existingTriggers = await _repository.GetEventTriggersAsync(_config.Events.Code, _config.Events.Action);
+            IEnumerable<string> existingTriggers = await _repository.GetEventTriggersAsync(_config.Events.Code, _config.Events.Action, ct);
 
             if (existingTriggers.SequenceEqual(triggers))
             {
                 return;
             }
 
-            await _repository.SyncEventsAsync(_config.Events.Code, _config.Events.Action, triggers);
+            await _repository.SyncEventsAsync(_config.Events.Code, _config.Events.Action, triggers, ct);
         }
 
-        private async Task SetFirstSendAfterAsync()
+        private async Task SetFirstSendAfterAsync(CancellationToken ct = default)
         {
-            IEnumerable<NotificationQueueItem> uninitializedTasks = await _repository.GetUninitializedTasksAsync(_config!.Name);
+            ct.ThrowIfCancellationRequested();
+
+            IEnumerable<NotificationQueueItem> uninitializedTasks = await _repository.GetUninitializedTasksAsync(_config!.Name, ct);
 
             if (!uninitializedTasks.Any())
             {
@@ -198,19 +221,19 @@ namespace Notify.Services
             Dictionary<long, DateTime> updates = new Dictionary<long, DateTime>();
             foreach (NotificationQueueItem task in uninitializedTasks)
             {
-               DateTime sendAfter = CalculateSendAfter(1, task.DateAdded);
-               updates[task.NotificationQueueId] = sendAfter;
+                DateTime sendAfter = CalculateSendAfter(1, task.DateAdded);
+                updates[task.NotificationQueueId] = sendAfter;
             }
 
-            await _repository.BatchUpdateSendAfterAsync(updates);
+            await _repository.BatchUpdateSendAfterAsync(updates, ct);
         }
 
-        private async Task RecoverStuckTasksAsync()
+        private async Task RecoverStuckTasksAsync(CancellationToken ct = default)
         {
-            await _repository.RecoverStuckTasksAsync(_config!.Name, Program.DateTimeKiev.AddMinutes(-10));
+            await _repository.RecoverStuckTasksAsync(_config!.Name, Program.DateTimeKiev.AddMinutes(-10), ct);
         }
 
-        private async Task<bool> ValidateConditionsAsync(NotificationTask task)
+        private async Task<bool> ValidateConditionsAsync(NotificationTask task, CancellationToken ct = default)
         {
             if (_config?.Conditions == null || !_config.Conditions.Any())
             {
@@ -219,12 +242,14 @@ namespace Notify.Services
 
             foreach (ConditionConfig cond in _config.Conditions.Values)
             {
+                ct.ThrowIfCancellationRequested();
+
                 if (string.IsNullOrEmpty(cond.Query))
                 {
                     continue;
                 }
 
-                int count = await _repository.ExecuteConditionQueryAsync(cond.Query, task);
+                int count = await _repository.ExecuteConditionQueryAsync(cond.Query, task, ct);
 
                 if (count < cond.MinCount)
                 {
@@ -350,7 +375,7 @@ namespace Notify.Services
                 return _config?.Message?.Values.FirstOrDefault()?.Variants.FirstOrDefault().Value;
             }
 
-            if (variants.Variants.Count == 0) 
+            if (variants.Variants.Count == 0)
             {
                 return null;
             }
@@ -442,10 +467,12 @@ namespace Notify.Services
             return field.Values.FirstOrDefault();
         }
 
-        private async Task<bool> ProcessBatchAsync(MessageProvider providerKey, List<NotificationTask> tasks, List<NotificationItem> notifications)
+        private async Task<bool> ProcessBatchAsync(MessageProvider providerKey, List<NotificationTask> tasks, List<NotificationItem> notifications, CancellationToken ct = default)
         {
             try
             {
+                ct.ThrowIfCancellationRequested();
+
                 INotificationProvider provider = _providerFactory(providerKey);
                 int chunkSize = _config?.ChunkSize > 0 ? _config.ChunkSize : 90;
                 int chunkDelay = _config?.ChunkDelay > 0 ? _config.ChunkDelay : 1;
@@ -457,15 +484,17 @@ namespace Notify.Services
 
                 for (int i = 0; i < chunks.Length; i++)
                 {
-                    await provider.SendAsync(chunks[i]);
+                    ct.ThrowIfCancellationRequested();
+
+                    await provider.SendAsync(chunks[i], ct);
 
                     if (i < chunks.Length - 1)
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(chunkDelay));
+                        await Task.Delay(TimeSpan.FromSeconds(chunkDelay), ct);
                     }
                 }
 
-                await FinalizeBatchAsync(tasks);
+                await FinalizeBatchAsync(tasks, ct);
                 return true;
             }
             catch (Exception ex)
@@ -473,13 +502,15 @@ namespace Notify.Services
                 _logger.LogBatchSendingFailed(ex, _config?.Name ?? "null");
 
                 // Revert status to pending upon failure
-                await _repository.ResetTaskStatusAsync(tasks.Select(t => t.Id));
+                await _repository.ResetTaskStatusAsync(tasks.Select(t => t.Id), ct: CancellationToken.None);
                 return false;
             }
         }
 
-        private async Task FinalizeBatchAsync(List<NotificationTask> tasks)
+        private async Task FinalizeBatchAsync(List<NotificationTask> tasks, CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
+
             Dictionary<int, string> completedUpdates = new Dictionary<int, string>();
             Dictionary<int, (DateTime SendAfter, string Payload)> pendingUpdates = new Dictionary<int, (DateTime SendAfter, string Payload)>();
             List<NotificationSendLog> logEntries = new List<NotificationSendLog>();
@@ -525,18 +556,18 @@ namespace Notify.Services
 
             if (completedUpdates.Count > 0)
             {
-                await _repository.BatchCompleteTasksAsync(completedUpdates);
+                await _repository.BatchCompleteTasksAsync(completedUpdates, ct);
             }
 
             if (pendingUpdates.Count > 0)
             {
-                await _repository.BatchRescheduleTasksAsync(pendingUpdates);
+                await _repository.BatchRescheduleTasksAsync(pendingUpdates, ct);
             }
 
-            await _repository.LogSendBatchAsync(logEntries);
+            await _repository.LogSendBatchAsync(logEntries, ct);
         }
 
-        private async Task ApplyTransitionAndCancelAsync(NotificationTask task, string reason)
+        private async Task ApplyTransitionAndCancelAsync(NotificationTask task, string reason, CancellationToken ct = default)
         {
             StateMachine<string, string> stateMachine = BuildStateMachine(task.Status);
 
@@ -545,7 +576,7 @@ namespace Notify.Services
                 stateMachine.Fire("cancel");
             }
 
-            await _repository.CancelTaskAsync(task.Id);
+            await _repository.CancelTaskAsync(task.Id, ct);
 
             _logger.TaskCancelledWithReason(task.Id, stateMachine.State, reason);
         }
@@ -575,7 +606,6 @@ namespace Notify.Services
         private static DateTime ParseModifyRule(DateTime baseDate, string modify)
         {
             Match match = ModifyRuleRegex().Match(modify.Trim());
-            // Regex.Match(modify.Trim(), @"^([+-]?\d+)\s*(hour|hours|day|days|month|months)$", RegexOptions.IgnoreCase);
 
             if (!match.Success)
             {
@@ -589,10 +619,10 @@ namespace Notify.Services
             {
                 "second" or "seconds" => baseDate.AddSeconds(value),
                 "minute" or "minutes" => baseDate.AddMinutes(value),
-                "hour"   or "hours"   => baseDate.AddHours(value),
-                "day"    or "days"    => baseDate.AddDays(value),
-                "month"  or "months"  => baseDate.AddMonths(value),
-                "year"   or "years"   => baseDate.AddYears(value),
+                "hour" or "hours" => baseDate.AddHours(value),
+                "day" or "days" => baseDate.AddDays(value),
+                "month" or "months" => baseDate.AddMonths(value),
+                "year" or "years" => baseDate.AddYears(value),
                 _ => baseDate
             };
         }
@@ -642,6 +672,45 @@ namespace Notify.Services
             }
 
             return _config?.Subject ?? "Повідомлення";
+        }
+
+        private async Task<bool> TriggerPhpTaskAsync(string callback, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(callback))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (HttpResponseMessage response = await _httpClient.GetAsync(string.Concat("?name=", Uri.EscapeDataString(callback.Trim())), ct))
+                {
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return true;
+                    }
+
+                    string errorResponseBody = await response.Content.ReadAsStringAsync(ct);
+                    _logger.LogPhpTaskFailed(callback, (int)response.StatusCode, errorResponseBody);
+
+                    return false;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                _logger.LogPhpTaskCanceled(callback);
+                return false;
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogPhpTaskNetworkError(ex, callback);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogPhpTaskUnexpectedError(ex, callback);
+                return false;
+            }
         }
     }
 }

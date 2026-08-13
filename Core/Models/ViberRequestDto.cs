@@ -5,7 +5,7 @@ namespace Notify.Core.Models
     public class ViberRequestDto
     {
         [JsonPropertyName("phones")]
-        public IEnumerable<string> Phones { get; set; } = Enumerable.Empty<string>();
+        public string[] Phones { get; set; } = Array.Empty<string>();
 
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;

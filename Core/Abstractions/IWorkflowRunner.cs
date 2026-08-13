@@ -4,6 +4,6 @@ namespace Notify.Core.Abstractions
 {
     public interface IWorkflowRunner
     {
-        Task<ExitCode> RunAsync();
+        Task<ExitCode> RunAsync(CancellationToken ct = default);
     }
 }
