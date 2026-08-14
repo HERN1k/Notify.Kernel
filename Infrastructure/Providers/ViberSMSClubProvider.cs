@@ -4,6 +4,7 @@ using Notify.Core.Enums;
 using Notify.Core.Models;
 using Notify.Helper;
 using Notify.Infrastructure.Serialization;
+using System.Net.Http.Json;
 
 namespace Notify.Infrastructure.Providers
 {

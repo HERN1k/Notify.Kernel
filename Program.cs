@@ -1,10 +1,12 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Serilog;
 using Notify.Core.Abstractions;
 using Notify.Core.Enums;
+using Notify.Core.Models.Yaml;
 using Notify.Helper;
+using Serilog;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Notify
 {
@@ -19,6 +21,7 @@ namespace Notify
             )
         );
 
+        [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(WorkflowRootConfig))]
         static async Task<int> Main(string[] args)
         {
             ExitCode exitCode = ExitCode.Success;

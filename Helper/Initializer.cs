@@ -7,6 +7,7 @@ using Notify.Core.Abstractions;
 using Notify.Core.Configuration;
 using Notify.Infrastructure.Data;
 using Notify.Infrastructure.Providers;
+using Notify.Infrastructure.Serialization;
 using Notify.Services;
 using Serilog;
 using Serilog.Events;
@@ -16,6 +17,7 @@ using System.Data;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 
 namespace Notify.Helper
 {
@@ -76,8 +78,11 @@ namespace Notify.Helper
             builder.Logging.ClearProviders();
             builder.Logging.AddSerilog(Log.Logger, dispose: false);
 
+            string appsettingsPath = $"{AppContext.BaseDirectory}appsettings.{builder.Environment.EnvironmentName}.json";
+            builder.Configuration.AddJsonFile(appsettingsPath, optional: false, reloadOnChange: true);
+
             IConfigurationManager config = builder.Configuration;
-            
+
             AppConfiguration appSettings = new AppConfiguration()
             {
                 Database = new DatabaseConfiguration()

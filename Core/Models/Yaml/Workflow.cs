@@ -30,13 +30,13 @@ namespace Notify.Core.Models.Yaml
         public WorkflowDefinition Workflow { get; set; } = new();
 
         [YamlMember("schedule")]
-        public Dictionary<int, ScheduleStepConfig> Schedule { get; set; } = new();
+        public Dictionary<string, ScheduleStepConfig> Schedule { get; set; } = new();
 
         [YamlMember("conditions")]
         public Dictionary<string, ConditionConfig> Conditions { get; set; } = new();
 
         [YamlMember("message")]
-        public Dictionary<int, MessageStepConfig> Message { get; set; } = new();
+        public Dictionary<string, MessageStepConfig> Message { get; set; } = new();
 
         [YamlMember("callbacks")]
         public Dictionary<string, string>? Callbacks { get; set; }
@@ -55,7 +55,7 @@ namespace Notify.Core.Models.Yaml
         public string Action { get; set; } = string.Empty;
 
         [YamlMember("triggers")]
-        public Dictionary<int, string> Triggers { get; set; } = new();
+        public Dictionary<string, string> Triggers { get; set; } = new();
     }
 
     [YamlObject]
@@ -104,6 +104,7 @@ namespace Notify.Core.Models.Yaml
     [YamlObject]
     public partial class MessageStepConfig
     {
+        [YamlMember("variants")]
         public Dictionary<string, MessageVariantConfig> Variants { get; set; } = new();
     }
 
@@ -117,18 +118,18 @@ namespace Notify.Core.Models.Yaml
         public string? Hypothesis { get; set; }
 
         [YamlMember("subject")]
-        public Dictionary<string, string?>? Subject { get; set; }
+        public Dictionary<string, string>? Subject { get; set; }
 
         [YamlMember("text")]
-        public Dictionary<string, string?> Text { get; set; } = new();
+        public Dictionary<string, string> Text { get; set; } = new();
 
         [YamlMember("button_text")]
-        public Dictionary<string, string?>? ButtonText { get; set; }
+        public Dictionary<string, string>? ButtonText { get; set; }
 
         [YamlMember("button_url")]
         public string? ButtonUrl { get; set; }
 
         [YamlMember("image_url")]
-        public Dictionary<string, string?>? ImageUrl { get; set; }
+        public Dictionary<string, string>? ImageUrl { get; set; }
     }
 }

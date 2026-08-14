@@ -2,14 +2,15 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net11.0</TargetFramework>
+	<TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 	<PublishAot>true</PublishAot>
 	<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
-    <EnablePreviewFeatures>true</EnablePreviewFeatures>
+	<EnablePreviewFeatures>true</EnablePreviewFeatures>
 	<Features>$(Features);runtime-async=on</Features>
-    <NoWarn>$(NoWarn);SYSLIB5007</NoWarn>
+	<NoWarn>$(NoWarn);SYSLIB5007</NoWarn>
+	<NoWarn>$(NoWarn);IL2104;IL3053</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -27,19 +28,20 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
-    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+	<PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="Stateless" Version="5.20.1" />
     <PackageReference Include="VYaml" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
-	<None Update="appsettings.json">
-	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	<None Update="appsettings.Production.json" Condition="'$(Configuration)' == 'Release'">
+		<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
 
-	<None Update="appsettings.Development.json" Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+	<None Update="appsettings.Development.json" Condition="'$(Configuration)'=='Debug'">
 	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 	</None>
   </ItemGroup>

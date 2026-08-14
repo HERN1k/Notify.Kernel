@@ -19,6 +19,9 @@ namespace Notify.Services
         private readonly HttpClient _httpClient;
         private readonly ILogger<WorkflowEngine> _logger;
 
+        private readonly bool _noMessage = false;
+        private static readonly YamlSerializerOptions _yamlSerializerOptions;
+
         private string _workflowName = string.Empty;
         private WorkflowRootConfig? _config;
         private int _maxAttempts;
@@ -32,12 +35,18 @@ namespace Notify.Services
         [GeneratedRegex(@"\s+")]
         private static partial Regex RenderCleanPayloadSpacesRegex();
 
-        public WorkflowEngine(IRepository repository, Func<MessageProvider, INotificationProvider> providerFactory, HttpClient httpClient, ILogger<WorkflowEngine> logger)
+        public WorkflowEngine(IRepository repository, Func<MessageProvider, INotificationProvider> providerFactory, HttpClient httpClient, IArgs argsParser, ILogger<WorkflowEngine> logger)
         {
             _repository = repository;
             _providerFactory = providerFactory;
             _httpClient = httpClient;
             _logger = logger;
+            _noMessage = argsParser.Get("no-message") != null;
+        }
+
+        static WorkflowEngine()
+        {
+            _yamlSerializerOptions = YamlOptionsFactory.CreateOptions();
         }
 
         public async Task<ExitCode> ExecuteAsync(string workflowPath, CancellationToken ct = default)
@@ -54,22 +63,7 @@ namespace Notify.Services
             _logger.LogRunWorkflow(_workflowName);
 
             byte[] yamlBytes = await File.ReadAllBytesAsync(workflowPath, ct);
-
-            _config = YamlSerializer.Deserialize<WorkflowRootConfig>(yamlBytes, new YamlSerializerOptions
-            {
-                Resolver = CompositeResolver.Create(
-                    new IYamlFormatter[]
-                    {
-                        FlexibleStringListFormatter.Instance,
-                        MessageStepFormatter.Instance
-                    },
-                    new IYamlFormatterResolver[]
-                    {
-                        GeneratedResolver.Instance,
-                        StandardResolver.Instance
-                    }
-                )
-            });
+            _config = YamlSerializer.Deserialize<WorkflowRootConfig>(yamlBytes, _yamlSerializerOptions);
 
             if (_config == null)
             {
@@ -339,10 +333,11 @@ namespace Notify.Services
             }
 
             return $@"<!DOCTYPE html>
-                    <html lang=""{lang}"">
+                    <html lang=""{lang.ToString().ToLowerInvariant()}"">
                     <head>
                         <meta charset=""UTF-8"">
                         <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
+                        <meta name=""x-apple-disable-message-reformatting"">
                         <title>Notification</title>
                     </head>
                     <body style=""margin:0;padding:32px 0;background-color:#f4f5f7;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"">
@@ -350,7 +345,7 @@ namespace Notify.Services
                             <tr>
                                 <td align=""center"" style=""padding:0 12px;"">
                                     <table role=""presentation"" width=""600"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""max-width:600px;width:100%;margin:0 auto;"">
-                                        <tr><td style=""background-color:#019f01;height:4px;border-top-left-radius:10px;border-top-right-radius:10px;"">&nbsp;</td></tr>
+                                        <tr><td style=""background-color:#019f01;height:4px;border-top-left-radius:10px; border-top-right-radius:10px; border-top: solid 1px #f4f5f7; border-left: solid 1px #e5e7eb; border-right: solid 1px #e5e7eb;""></td></tr>
                                         <tr>
                                             <td style=""background-color:#ffffff;border-bottom-left-radius:10px;border-bottom-right-radius:10px;padding:36px 40px;box-shadow:0 4px 12px rgba(0,0,0,0.05);border:1px solid #e5e7eb;border-top:none;"">
                                                 <table role=""presentation"" width=""100%"" border=""0"" cellpadding=""0"" cellspacing=""0"">
@@ -370,7 +365,7 @@ namespace Notify.Services
 
         private MessageVariantConfig? ResolveTemplate(int attempt, NotificationTask task)
         {
-            if (_config?.Message == null || !_config.Message.TryGetValue(attempt, out MessageStepConfig? variants) || variants == null)
+            if (_config?.Message == null || !_config.Message.TryGetValue(attempt.ToString(), out MessageStepConfig? variants) || variants == null)
             {
                 return _config?.Message?.Values.FirstOrDefault()?.Variants.FirstOrDefault().Value;
             }
@@ -452,7 +447,7 @@ namespace Notify.Services
             return input;
         }
 
-        private static string? ResolveLocalizedField(Dictionary<string, string?>? field, LanguageCode languageCode)
+        private static string? ResolveLocalizedField(Dictionary<string, string>? field, LanguageCode languageCode)
         {
             if (field == null || field.Count == 0)
             {
@@ -486,7 +481,10 @@ namespace Notify.Services
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    await provider.SendAsync(chunks[i], ct);
+                    if (!_noMessage)
+                    {
+                        await provider.SendAsync(chunks[i], ct);
+                    }
 
                     if (i < chunks.Length - 1)
                     {
@@ -583,7 +581,7 @@ namespace Notify.Services
 
         private DateTime CalculateSendAfter(int attempt, DateTime createdAt)
         {
-            if (_config?.Schedule == null || !_config.Schedule.TryGetValue(attempt, out ScheduleStepConfig? rule) || rule == null)
+            if (_config?.Schedule == null || !_config.Schedule.TryGetValue(attempt.ToString(), out ScheduleStepConfig? rule) || rule == null)
             {
                 throw new ArgumentException($"No schedule rule for attempt {attempt}");
             }

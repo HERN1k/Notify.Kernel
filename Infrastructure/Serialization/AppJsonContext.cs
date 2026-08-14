@@ -1,5 +1,6 @@
-﻿using System.Text.Json.Serialization;
+﻿using Notify.Core.Configuration;
 using Notify.Core.Models;
+using System.Text.Json.Serialization;
 
 namespace Notify.Infrastructure.Serialization
 {
@@ -10,6 +11,7 @@ namespace Notify.Infrastructure.Serialization
     [JsonSerializable(typeof(ViberResponseDto))]
     [JsonSerializable(typeof(EmailRequestDto))]
     [JsonSerializable(typeof(EmailResponseDto))]
+    [JsonSerializable(typeof(AppConfiguration))]
     internal partial class AppJsonContext : JsonSerializerContext
     {
     }
