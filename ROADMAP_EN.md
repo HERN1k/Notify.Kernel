@@ -6,7 +6,7 @@
 ![Status](https://img.shields.io/badge/status-in%20progress-yellow)
 ![Progress](https://img.shields.io/badge/progress-22%2F25%20done-brightgreen)
 
-**Progress:** ✅ 22/25 tasks done (88%) · ❌ 2 dropped/deferred · ⏳ 1 in progress
+**Progress:** ✅ 22/25 tasks done (94%) · ❌ 1 dropped/deferred · ⏳ 1 in progress
 
 ---
 
@@ -59,7 +59,7 @@ Notify.Kernel/
 - [x] **Define the PHP ↔ .NET data exchange protocol**
     - [x] Data passed via CLI arguments (for quick, targeted triggers)
     - [ ] ~~JSON passed via `stdin` or temp files (for complex structured data)~~ — ❌ **dropped**
-- [ ] ~~**Design YAML workflow schemas**~~ — ❌ **dropped / deferred**
+- [ ] **Design YAML workflow schemas** — ❌ **dropped / deferred**
     - Analyze and document the file structure under `config/workflows`
     - Create matching C# DTO models (`WorkflowConfig`, `WorkflowStep`, `WorkflowAction`)
 - [x] **Database audit & mapping**
