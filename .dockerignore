@@ -1,0 +1,17 @@
+bin/
+obj/
+publish/
+**/bin/
+**/obj/
+
+.git/
+.vs/
+.idea/
+
+scripts/
+*.md
+*.binlog
+*.user
+
+# Локальні конфіги — тримайте секрети поза образом, підключайте через env/volume
+appsettings.Development.json

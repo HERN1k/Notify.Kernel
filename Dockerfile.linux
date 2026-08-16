@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+#
+# Збірка Linux-образу для .NET Native AOT сервісу Notify.
+# Збирається на будь-якому хості, де Docker Desktop у режимі Linux-контейнерів.
+#
+# ВАЖЛИВО: проєкт таргетить .NET 11, який наразі в preview (.NET 11 ще не GA).
+# Тому образи беруться з nightly-репозиторію Microsoft (mcr.microsoft.com/dotnet/nightly/*),
+# а не зі звичайного mcr.microsoft.com/dotnet/*. Теги виду "11.0-preview-..." — плаваючі
+# (оновлюються при кожному новому preview-білді SDK), тому збірка сьогодні і за тиждень
+# може підтягнути різну версію SDK. Коли перейдете на реліз .NET 11 (GA), замініть
+# nightly-образи на звичайні mcr.microsoft.com/dotnet/sdk:11.0 / dotnet/runtime-deps:11.0-*.
+# Якщо потрібна відтворювана збірка вже зараз — зафіксуйте конкретну версію,
+# наприклад 11.0.0-preview.6-resolute замість 11.0-preview-resolute.
+
+# "-aot" варіант SDK-образу має вже вбудовані передумови для Native AOT
+# (clang, zlib1g-dev тощо) — без нього RUN dotnet publish падає з помилкою
+# "Platform linker ('clang' or 'gcc') not found in PATH".
+FROM mcr.microsoft.com/dotnet/nightly/sdk:11.0-preview-aot AS build
+WORKDIR /src
+
+# Спочатку копіюємо тільки csproj — окремий шар кешу для restore,
+# щоб при зміні коду (без зміни залежностей) restore не перезапускався.
+COPY Notify.csproj .
+RUN dotnet restore Notify.csproj -r linux-x64
+
+# Тепер решта коду проєкту
+COPY . .
+RUN dotnet publish Notify.csproj \
+    -c Release \
+    -r linux-x64 \
+    --self-contained true \
+    -p:PublishAot=true \
+    -o /app/publish
+
+# chiseled-образ — мінімальний набір рантайм-залежностей, без shell/apt/пакетного менеджера.
+# Для Native AOT рантайм .NET не потрібен взагалі, потрібні лише системні бібліотеки
+# (libicu, libssl тощо), тому chiseled — найлегший коректний варіант.
+# "resolute" — кодова назва Ubuntu 26.04, на якій зараз збираються образи .NET 11 preview.
+FROM mcr.microsoft.com/dotnet/nightly/runtime-deps:11.0-preview-resolute-chiseled AS final
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# Порт задайте під свій сервіс (або приберіть, якщо Notify — не HTTP-сервіс,
+# а, наприклад, консьюмер черги/воркер).
+ENV DOTNET_ENVIRONMENT=Production
+EXPOSE 8080
+ENV ASPNETCORE_URLS=http://+:8080
+
+# chiseled-образи вже налаштовані на запуск не від root — $APP_UID заданий базовим образом.
+USER $APP_UID
+ENTRYPOINT ["./Notify"]

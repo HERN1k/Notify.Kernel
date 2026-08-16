@@ -4,6 +4,7 @@
 ## Get latest from `dotnet new gitignore`
 
 /workflows
+/publish
 
 # dotenv files
 .env
